@@ -1,0 +1,70 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: taint-cleaner
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: taint-cleaner
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "patch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: taint-cleaner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: taint-cleaner
+subjects:
+- kind: ServiceAccount
+  name: taint-cleaner
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: taint-cleaner
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: taint-cleaner
+  template:
+    metadata:
+      labels:
+        name: taint-cleaner
+    spec:
+      serviceAccountName: taint-cleaner
+      tolerations:
+        - operator: "Exists"
+      containers:
+      - name: taint-cleaner
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          apt update && apt install -y jq
+          echo "Checking node: $MY_NODE_NAME"
+          kubectl get node "$MY_NODE_NAME" -o json > /tmp/node.json
+          jq '.spec.taints' /tmp/node.json || echo "No taints section found."
+          if jq -e '.spec.taints[] | select(.key=="DeletionCandidateOfClusterAutoscaler" and .effect=="PreferNoSchedule")' /tmp/node.json > /dev/null; then
+            echo "Taint found. Removing..."
+            kubectl taint nodes "$MY_NODE_NAME" DeletionCandidateOfClusterAutoscaler:PreferNoSchedule-
+          else
+            echo "No matching taint found."
+          fi
+          sleep infinity
+        env:
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      restartPolicy: Always
